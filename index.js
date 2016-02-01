@@ -15,12 +15,13 @@ function SuperCluster(options) {
 
 SuperCluster.prototype = {
     options: {
-        minZoom: 0,   // min zoom to generate clusters on
-        maxZoom: 16,  // max zoom level to cluster the features on
-        radius: 40,   // cluster radius in pixels
-        extent: 512,  // tile extent (radius is calculated relative to it)
-        nodeSize: 16, // size of the R-tree leaf node, affects performance
-        log: false    // whether to log timing info
+        minZoom: 0,             // min zoom to generate clusters on
+        maxZoom: 16,            // max zoom level to cluster the features on
+        radius: 40,             // cluster radius in pixels
+        extent: 512,            // tile extent (radius is calculated relative to it)
+        nodeSize: 16,           // size of the R-tree leaf node, affects performance
+        log: false,             // whether to log timing info
+        collectFeatures: false  // whether to set features attribute in cluster
     },
 
     load: function (features, getCenter) {
@@ -32,7 +33,7 @@ SuperCluster.prototype = {
         if (log) console.time(timerId);
 
         // generate a cluster object for each feature
-        var clusters = features.map(function (f) { return createFeatureCluster(f, getCenter); });
+        var clusters = features.map(function (f) { return this.createFeatureCluster(f, getCenter); }, this);
         if (log) console.timeEnd(timerId);
 
         // cluster features on max zoom, then cluster the results on previous zoom, etc.;
@@ -119,6 +120,9 @@ SuperCluster.prototype = {
             var bboxNeighbors = this.trees[zoom + 1].search(bbox);
 
             var foundNeighbors = false;
+            if (this.options.collectFeatures) {
+                var features = c.features.slice();
+            }
             var numPoints = c.numPoints;
             var wx = c.wx * numPoints;
             var wy = c.wy * numPoints;
@@ -132,6 +136,9 @@ SuperCluster.prototype = {
                     wx += b.wx * b.numPoints; // accumulate coordinates for calculating weighted center
                     wy += b.wy * b.numPoints;
                     numPoints += b.numPoints;
+                    if (this.options.collectFeatures) {
+                        features.push.apply(features, b.features);
+                    }
                 }
             }
 
@@ -147,11 +154,27 @@ SuperCluster.prototype = {
             // save weighted cluster center for display
             cluster.wx = wx / numPoints;
             cluster.wy = wy / numPoints;
+            if (this.options.collectFeatures) {
+                cluster.features = features;
+            }
 
             resultClusters.push(cluster);
         }
 
         return resultClusters;
+    },
+
+    createFeatureCluster: function (f, getCenter) {
+        if (typeof getCenter !== 'function') {
+            getCenter = getCenterForPoint;
+        }
+        var coords = getCenter(f);
+        var cluster = createCluster(lngX(coords[0]), latY(coords[1]));
+        cluster.feature = f;
+        if (this.options.collectFeatures) {
+            cluster.features = [f];
+        }
+        return cluster;
     }
 };
 
@@ -173,22 +196,13 @@ function createCluster(x, y) {
         wy: y,
         zoom: Infinity, // the last zoom the cluster was processed at
         feature: null,
+        features: null,
         numPoints: 1
     };
 }
 
 function getCenterForPoint(f) {
     return f.geometry.coordinates;
-}
-
-function createFeatureCluster(f, getCenter) {
-    if (typeof getCenter !== 'function') {
-        getCenter = getCenterForPoint;
-    }
-    var coords = getCenter(f);
-    var cluster = createCluster(lngX(coords[0]), latY(coords[1]));
-    cluster.feature = f;
-    return cluster;
 }
 
 function getClusterJSON(cluster) {
@@ -206,11 +220,18 @@ function getClusterProperties(cluster) {
     var count = cluster.numPoints;
     var abbrev = count >= 10000 ? Math.round(count / 1000) + 'k' :
                  count >= 1000 ? (Math.round(count / 100) / 10) + 'k' : count;
-    return {
+
+    var properties = {
         cluster: true,
         point_count: count,
         point_count_abbreviated: abbrev
     };
+
+    if (cluster.features) {
+        properties.features = cluster.features;
+    }
+
+    return properties;
 }
 
 // longitude/latitude to spherical mercator in [0..1] range
