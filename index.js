@@ -16,31 +16,31 @@ function SuperCluster(options) {
 SuperCluster.prototype = {
     options: {
         minZoom: 0,   // min zoom to generate clusters on
-        maxZoom: 16,  // max zoom level to cluster the points on
+        maxZoom: 16,  // max zoom level to cluster the features on
         radius: 40,   // cluster radius in pixels
         extent: 512,  // tile extent (radius is calculated relative to it)
         nodeSize: 16, // size of the R-tree leaf node, affects performance
         log: false    // whether to log timing info
     },
 
-    load: function (points) {
+    load: function (features, getCenter) {
         var log = this.options.log;
 
         if (log) console.time('total time');
 
-        var timerId = 'prepare ' + points.length + ' points';
+        var timerId = 'prepare ' + features.length + ' features';
         if (log) console.time(timerId);
 
-        // generate a cluster object for each point
-        var clusters = points.map(createPointCluster);
+        // generate a cluster object for each feature
+        var clusters = features.map(function (f) { return createFeatureCluster(f, getCenter); });
         if (log) console.timeEnd(timerId);
 
-        // cluster points on max zoom, then cluster the results on previous zoom, etc.;
+        // cluster features on max zoom, then cluster the results on previous zoom, etc.;
         // results in a cluster hierarchy across zoom levels
         for (var z = this.options.maxZoom; z >= this.options.minZoom; z--) {
             var now = +Date.now();
 
-            this.trees[z + 1].load(clusters); // index input points into an R-tree
+            this.trees[z + 1].load(clusters); // index input features into an R-tree
             clusters = this._cluster(clusters, z); // create a new set of clusters for the zoom
 
             if (log) console.log('z%d: %d clusters in %dms', z, clusters.length, +Date.now() - now);
@@ -81,7 +81,7 @@ SuperCluster.prototype = {
                     Math.round(extent * (c.wx * z2 - x)),
                     Math.round(extent * (c.wy * z2 - y))
                 ]],
-                tags: c.point ? c.point.properties : getClusterProperties(c)
+                tags: c.feature ? c.feature.properties : getClusterProperties(c)
             };
             tile.features.push(feature);
         }
@@ -99,34 +99,34 @@ SuperCluster.prototype = {
         }
     },
 
-    _cluster: function (points, zoom) {
-        var clusters = [];
+    _cluster: function (clusters, zoom) {
+        var resultClusters = [];
         var r = this.options.radius / (this.options.extent * Math.pow(2, zoom));
         var bbox = [0, 0, 0, 0];
 
         // loop through each point
-        for (var i = 0; i < points.length; i++) {
-            var p = points[i];
+        for (var i = 0; i < clusters.length; i++) {
+            var c = clusters[i];
             // if we've already visited the point at this zoom level, skip it
-            if (p.zoom <= zoom) continue;
-            p.zoom = zoom;
+            if (c.zoom <= zoom) continue;
+            c.zoom = zoom;
 
             // find all nearby points with a bbox search
-            bbox[0] = p.wx - r;
-            bbox[1] = p.wy - r;
-            bbox[2] = p.wx + r;
-            bbox[3] = p.wy + r;
+            bbox[0] = c.wx - r;
+            bbox[1] = c.wy - r;
+            bbox[2] = c.wx + r;
+            bbox[3] = c.wy + r;
             var bboxNeighbors = this.trees[zoom + 1].search(bbox);
 
             var foundNeighbors = false;
-            var numPoints = p.numPoints;
-            var wx = p.wx * numPoints;
-            var wy = p.wy * numPoints;
+            var numPoints = c.numPoints;
+            var wx = c.wx * numPoints;
+            var wy = c.wy * numPoints;
 
             for (var j = 0; j < bboxNeighbors.length; j++) {
                 var b = bboxNeighbors[j];
                 // filter out neighbors that are too far or already processed
-                if (zoom < b.zoom && distSq(p, b) <= r * r) {
+                if (zoom < b.zoom && distSq(c, b) <= r * r) {
                     foundNeighbors = true;
                     b.zoom = zoom; // save the zoom (so it doesn't get processed twice)
                     wx += b.wx * b.numPoints; // accumulate coordinates for calculating weighted center
@@ -136,27 +136,27 @@ SuperCluster.prototype = {
             }
 
             if (!foundNeighbors) {
-                clusters.push(p); // no neighbors, add a single point as cluster
+                resultClusters.push(c); // no neighbors, add a single point as cluster
                 continue;
             }
 
             // form a cluster with neighbors
-            var cluster = createCluster(p.x, p.y);
+            var cluster = createCluster(c.x, c.y);
             cluster.numPoints = numPoints;
 
             // save weighted cluster center for display
             cluster.wx = wx / numPoints;
             cluster.wy = wy / numPoints;
 
-            clusters.push(cluster);
+            resultClusters.push(cluster);
         }
 
-        return clusters;
+        return resultClusters;
     }
 };
 
-function toBBox(p) {
-    return [p.x, p.y, p.x, p.y];
+function toBBox(c) {
+    return [c.x, c.y, c.x, c.y];
 }
 function compareMinX(a, b) {
     return a.x - b.x;
@@ -172,20 +172,27 @@ function createCluster(x, y) {
         wx: x, // weighted cluster center
         wy: y,
         zoom: Infinity, // the last zoom the cluster was processed at
-        point: null,
+        feature: null,
         numPoints: 1
     };
 }
 
-function createPointCluster(p) {
-    var coords = p.geometry.coordinates;
+function getCenterForPoint(f) {
+    return f.geometry.coordinates;
+}
+
+function createFeatureCluster(f, getCenter) {
+    if (typeof getCenter !== 'function') {
+        getCenter = getCenterForPoint;
+    }
+    var coords = getCenter(f);
     var cluster = createCluster(lngX(coords[0]), latY(coords[1]));
-    cluster.point = p;
+    cluster.feature = f;
     return cluster;
 }
 
 function getClusterJSON(cluster) {
-    return cluster.point ? cluster.point : {
+    return cluster.feature ? cluster.feature : {
         type: 'Feature',
         properties: getClusterProperties(cluster),
         geometry: {
