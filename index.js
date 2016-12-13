@@ -190,12 +190,20 @@ function getClusterProperties(cluster) {
     var count = cluster.numPoints;
     var abbrev = count >= 10000 ? Math.round(count / 1000) + 'k' :
                  count >= 1000 ? (Math.round(count / 100) / 10) + 'k' : count;
-    return {
-        cluster: true,
-        point_count: count,
-        point_count_abbreviated: abbrev,
-        ids: cluster.ids
+    var result = {
+      cluster: true,
+      point_count: count,
+      point_count_abbreviated: abbrev,
+      ids: cluster.ids
     };
+
+    // for check if cluster has a feature
+    var ids = cluster.ids || []
+    for (var i = 0; i < ids.length; i += 1) {
+      result['__id__' + ids[i]] = 1
+    }
+
+    return result;
 }
 
 // longitude/latitude to spherical mercator in [0..1] range
